@@ -22,7 +22,8 @@
   h1 { font-size: 18px; margin: 0; }
   h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
        text-transform: uppercase; letter-spacing: .04em; }
-  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+         grid-template-columns: minmax(0, 1fr); }  /* minmax(0,..) stops wide tables stretching the page */
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .status { color: var(--muted); font-size: 13px; }
@@ -36,8 +37,9 @@
   .tile .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .tile .value { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 4px; }
   .tile .unit { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 3px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 480px) { main { padding: 12px; } .tile .value { font-size: 22px; } header { padding: 12px; } }
   .chart-box { position: relative; height: 240px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }

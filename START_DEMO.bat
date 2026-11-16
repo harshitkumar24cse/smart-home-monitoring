@@ -2,6 +2,13 @@
 title Smart Home Monitor - backend (keep this window open)
 cd /d "%~dp0backend"
 
+if not exist "..\.venv\Scripts\python.exe" (
+  echo Setup has not been done on this computer yet.
+  echo Double-click SETUP.bat first ^(once^), then START_DEMO.bat again.
+  pause
+  exit /b 1
+)
+
 echo ============================================================
 echo   Smart Home Monitor
 echo ============================================================

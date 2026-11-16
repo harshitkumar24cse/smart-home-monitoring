@@ -21,10 +21,25 @@ ESP32 (Wokwi) --MQTT--> broker.hivemq.com --> FastAPI backend --> SQLite
 | `backend/alerts.py` | Threshold and z-score alert rules (Phase 5) |
 | `backend/maintenance.py` | Isolation Forest maintenance detector + synthetic training data (Phase 6) |
 | `backend/models/report.json` | Model accuracy on unseen synthetic test data |
+| `SETUP.bat` / `START_DEMO.bat` | Double-click: install once / run the app |
 | `tools/simulate.py` | Sends fake readings over HTTP (normal or with faults) |
 | `tests/` | Automated tests (`pytest`), no internet needed |
 
-## Setup (once)
+## Quick start (Windows, no typing needed)
+1. Install Python 3.10+ from https://www.python.org/downloads/ (tick **Add Python to PATH**).
+2. Download this repo (green **Code** button -> **Download ZIP**) and unzip it.
+3. Double-click **`SETUP.bat`** once (installs the packages, needs internet, a few minutes).
+4. Double-click **`START_DEMO.bat`** whenever you want to run it. Press **Y** for empty data or **N**
+   to keep old data. It shows the address for your phone and opens the dashboard. Keep its window open.
+5. Open the Wokwi project (Phase 2), set the knobs to ~230 V and ~5 A, and press Play.
+
+Data is only saved while the `START_DEMO.bat` window is open. Readings sent while it is closed are lost.
+
+**Two laptops at once:** both use the same MQTT topic, so if two Wokwi simulations run at the same time,
+both dashboards show the readings from both. Run only one Wokwi at a time, or change `MQTT_TOPIC` in the
+sketch and `backend/main.py` to a different unique name.
+
+## Setup by hand (instead of SETUP.bat)
 ```
 python -m venv .venv
 .venv\Scripts\python -m pip install -r backend/requirements.txt

@@ -19,6 +19,8 @@ ESP32 (Wokwi) --MQTT--> broker.hivemq.com --> FastAPI backend --> SQLite
 | `backend/main.py` | FastAPI app: MQTT subscriber, SQLite storage, REST API |
 | `backend/static/index.html` | Web dashboard (Phase 4) |
 | `backend/alerts.py` | Threshold and z-score alert rules (Phase 5) |
+| `backend/maintenance.py` | Isolation Forest maintenance detector + synthetic training data (Phase 6) |
+| `backend/models/report.json` | Model accuracy on unseen synthetic test data |
 | `tools/simulate.py` | Sends fake readings over HTTP (normal or with faults) |
 | `tests/` | Automated tests (`pytest`), no internet needed |
 
@@ -122,3 +124,52 @@ false alarm from normal sensor noise in testing, so the default is 3.5.
 
 Try it: `tools/simulate.py --count 30` (builds a baseline), then `--fault spike` or `--fault sag`.
 In Wokwi, turn the current pot above 9 A or the voltage pot below 207 V.
+
+## Phase 6: Predictive maintenance (Isolation Forest)
+Phase 5 looks at single readings. A failing appliance usually shows up *gradually* instead: its current
+creeps up (worn motor, clogged filter) or becomes unstable (loose contact). Phase 6 catches that.
+
+**How it works** (`backend/maintenance.py`)
+1. For each new reading, take the last 10 readings of that appliance (~30 s on the ESP32) and compute
+   3 features: average voltage, average current, and current spread (std).
+2. An Isolation Forest per appliance type (`heater` 5 A, `fridge` 0.8 A, `ac` 6.5 A) has been trained on
+   3000 **synthetic normal** windows. It scores each new window; below 0 = abnormal.
+3. Health % = share of the last 10 windows that looked normal. Status: `ok`, `watch` (3+ abnormal),
+   `service needed` (7+ abnormal).
+4. On `service needed` a **maintenance notification** is created in plain words (e.g. "drawing 8.3 A vs
+   6.5 A normal"), shown in the dashboard's Alerts panel and banner, and re-published on the MQTT
+   alerts topic. At most one per appliance every 10 min (`MAINT_COOLDOWN_S`).
+
+Appliances with no trained profile show "no model" (alerts from Phase 5 still work for them).
+The Wokwi sketch publishes as `heater`, so keep its current pot near 5 A and voltage pot near 230 V for
+"normal".
+
+**Training and accuracy.** The model is trained automatically on first start if
+`backend/models/maintenance.joblib` is missing. To retrain and print the report:
+```
+.venv\Scripts\python backend/maintenance.py
+```
+Results on 500 unseen synthetic windows per case:
+
+| Appliance | Normal windows flagged (false alarm) | Current drift caught | Unstable current caught | Low voltage (185-205 V) caught |
+|---|---|---|---|---|
+| heater | 1.6% | 100% | 100% | 100% |
+| fridge | 0.8% | 100% | 100% | 100% |
+| ac | 0.0% | 100% | 100% | 52% |
+
+Single false alarms do not cause notifications, because 7 of the last 10 windows must be abnormal.
+The AC's weak low-voltage score is because a 205 V sag is close to normal mains variation; voltage sags
+are caught anyway by the Phase 5 under-voltage rule.
+
+Design note: with scikit-learn's default `max_samples=256`, only ~20% of drift windows were caught —
+points far outside the normal range scored almost the same as the most extreme normal points. Letting
+each tree see all training windows (`max_samples=1.0`) fixed this.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/maintenance` | Health, status and features per appliance |
+| `GET /api/maintenance/report` | Model accuracy report from training |
+
+**Try it:** `tools/simulate.py --count 30` (normal), then
+`tools/simulate.py --count 60 --fault wear --appliances ac`. Tested 2026-11-16: the maintenance notice
+for `ac` came *before* the over-current threshold alert, i.e. the wear was caught early.

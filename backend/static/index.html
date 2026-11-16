@@ -61,6 +61,17 @@
   .sev { flex: none; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; }
   .sev.critical { background: var(--bad); color: #fff; } .sev.warning { background: var(--warn); color: #fff; }
   .sev.info { background: var(--accent); color: #fff; }
+  .sev.maintenance { background: var(--accent); color: #fff; }
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .health { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .health .name { font-weight: 650; display: flex; justify-content: space-between; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; margin: 8px 0 6px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--ok); }
+  .health.watch .bar > div { background: var(--warn); } .health.service .bar > div { background: var(--bad); }
+  .health.service { border-color: var(--bad); }
+  .pill { font-size: 12px; font-weight: 600; } .health.watch .pill { color: var(--warn); }
+  .health.service .pill { color: var(--bad); } .health.ok .pill { color: var(--ok); }
+  .banner { display: none; padding: 10px 14px; border-radius: 8px; background: var(--bad); color: #fff; font-weight: 600; }
   .alert-text { flex: 1; } .alert-meta { color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -123,6 +134,15 @@
       </div>
       <ul id="alertList" class="alert-list"><li class="empty">No alerts.</li></ul>
     </div>
+  </section>
+
+  <!-- Phase 6: maintenance (Isolation Forest) -->
+  <section class="card">
+    <h2>Maintenance (ML health check)</h2>
+    <div id="maintBanner" class="banner"></div>
+    <div id="healthGrid" class="health-grid" style="margin-top:8px"><div class="empty">Waiting for readings…</div></div>
+    <div class="status" style="margin-top:8px">Isolation Forest on the last 10 readings (voltage, mean current,
+      current spread). Health = share of recent windows that looked normal.</div>
   </section>
 
   <!-- per-appliance view -->
@@ -266,10 +286,30 @@ async function refreshCostAndTable() {
     </tr>`).join("") : '<tr><td colspan="7" class="empty">No readings yet.</td></tr>';
 }
 
+async function refreshMaintenance() {
+  const m = await getJSON("/api/maintenance");
+  if (!m) return;
+  const cls = { ok: "ok", watch: "watch", "service needed": "service" };
+  $("healthGrid").innerHTML = m.appliances.length ? m.appliances.map((a) => {
+    if (a.health == null) {
+      const note = a.status === "learning" ? `collecting data (${a.readings_needed} more)` : "no trained model for this appliance";
+      return `<div class="health"><div class="name">${esc(a.appliance_id)}</div><div class="status">${note}</div></div>`;
+    }
+    return `<div class="health ${cls[a.status]}">
+      <div class="name">${esc(a.appliance_id)}<span class="pill">${a.status}</span></div>
+      <div class="bar"><div style="width:${a.health}%"></div></div>
+      <div class="status">Health ${a.health}% · ${fmt(a.current_avg, 2)} A avg (normal ${fmt(a.current_normal, 2)}) · ±${fmt(a.current_std, 2)} A</div>
+    </div>`;
+  }).join("") : '<div class="empty">Waiting for readings…</div>';
+  const bad = m.appliances.filter((a) => a.status === "service needed").map((a) => a.appliance_id);
+  $("maintBanner").style.display = bad.length ? "block" : "none";
+  $("maintBanner").textContent = bad.length ? `Maintenance needed: ${bad.join(", ")} — see Alerts for details.` : "";
+}
+
 async function refreshAll() {
   await refreshAppliances();
   if (!limits) limits = await getJSON("/api/thresholds");
-  await Promise.all([refreshHealth(), refreshLatest(), refreshHistory(), refreshCostAndTable(), refreshAlerts()]);
+  await Promise.all([refreshHealth(), refreshLatest(), refreshHistory(), refreshCostAndTable(), refreshAlerts(), refreshMaintenance()]);
 }
 
 // ---------- events ----------

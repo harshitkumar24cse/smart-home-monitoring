@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import alerts
+import maintenance
 
 print = functools.partial(print, flush=True)  # show log lines immediately
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -35,6 +36,7 @@ TARIFF_PER_KWH = float(os.getenv("TARIFF_PER_KWH", "8.0"))  # INR per kWh (flat 
 MQTT_ENABLED = os.getenv("MQTT_ENABLED", "1") == "1"  # set to 0 for offline tests
 ALERT_TOPIC = os.getenv("ALERT_TOPIC", "harshit-smarthome-7f3a/alerts")  # alerts are re-published here
 ALERT_COOLDOWN_S = int(os.getenv("ALERT_COOLDOWN_S", "60"))  # same alert at most once per minute
+MAINT_COOLDOWN_S = int(os.getenv("MAINT_COOLDOWN_S", "600"))  # maintenance notice at most every 10 min
 
 # ---------------- database ----------------
 _db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -90,10 +92,10 @@ def recent_powers(appliance_id: str, n: int) -> list:
     return [row["power"] for row in rows]
 
 
-def add_alert(appliance_id: str, kind: str, severity: str, message: str):
-    """Store an alert unless the same one was raised in the last ALERT_COOLDOWN_S seconds."""
+def add_alert(appliance_id: str, kind: str, severity: str, message: str, cooldown_s: int = ALERT_COOLDOWN_S):
+    """Store an alert unless the same one was raised in the last `cooldown_s` seconds."""
     ts = now_iso()
-    since = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_COOLDOWN_S)).isoformat(timespec="seconds")
+    since = (datetime.now(timezone.utc) - timedelta(seconds=cooldown_s)).isoformat(timespec="seconds")
     with _lock:
         recent = _db.execute(
             "SELECT 1 FROM alerts WHERE appliance_id = ? AND kind = ? AND ts >= ? LIMIT 1",
@@ -130,7 +132,19 @@ def save_reading(r: Reading) -> dict:
     # Phase 5: threshold + z-score checks
     problems = alerts.check_thresholds(r.voltage, r.current, r.power) + alerts.check_zscore(history, r.power)
     raised = [a for a in (add_alert(r.appliance_id, *p) for p in problems) if a]
-    return {"ts": ts, **r.model_dump(), "alerts": raised}
+
+    # Phase 6: Isolation Forest maintenance check over the last few readings
+    health = detector.update(r.appliance_id, r.voltage, r.current)
+    if health["notify"]:
+        notice = add_alert(r.appliance_id, "maintenance", "maintenance",
+                           maintenance.explain(health), cooldown_s=MAINT_COOLDOWN_S)
+        if notice:
+            raised.append(notice)
+    return {"ts": ts, **r.model_dump(), "alerts": raised, "maintenance": health}
+
+
+# Phase 6: trained models (trained on synthetic data on first run if no saved model exists)
+detector = maintenance.MaintenanceDetector(maintenance.load_models())
 
 
 # ---------------- MQTT subscriber ----------------
@@ -327,3 +341,21 @@ def acknowledge_all():
 def thresholds():
     return {**alerts.THRESHOLDS, "z_limit": alerts.Z_LIMIT, "z_window": alerts.Z_WINDOW,
             "cooldown_s": ALERT_COOLDOWN_S}
+
+
+# ---------------- Phase 6: maintenance ----------------
+@app.get("/api/maintenance")
+def maintenance_status():
+    """Health of each appliance according to the Isolation Forest (latest window)."""
+    return {"window": maintenance.WINDOW, "notify_after": maintenance.NOTIFY_AFTER,
+            "appliances": sorted(detector.all_status(), key=lambda s: s["appliance_id"])}
+
+
+@app.get("/api/maintenance/report")
+def maintenance_report():
+    """How well the models did on unseen synthetic test data when they were trained."""
+    try:
+        with open(maintenance.REPORT_PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise HTTPException(404, "no report yet - run: python backend/maintenance.py")

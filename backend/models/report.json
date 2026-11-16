@@ -1,0 +1,20 @@
+{
+  "heater": {
+    "normal_flagged_%": 1.6,
+    "drift_detected_%": 100.0,
+    "unstable_detected_%": 100.0,
+    "low_voltage_detected_%": 100.0
+  },
+  "fridge": {
+    "normal_flagged_%": 0.8,
+    "drift_detected_%": 100.0,
+    "unstable_detected_%": 100.0,
+    "low_voltage_detected_%": 100.0
+  },
+  "ac": {
+    "normal_flagged_%": 0.0,
+    "drift_detected_%": 100.0,
+    "unstable_detected_%": 100.0,
+    "low_voltage_detected_%": 52.4
+  }
+}

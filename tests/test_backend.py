@@ -109,3 +109,50 @@ def test_zscore_alert_end_to_end():
         send("pump", 230, 2.0 + 0.01 * (i % 3))    # steady ~460 W
     out = send("pump", 230, 3.5)                   # sudden jump to ~805 W, still under limits
     assert [a["kind"] for a in out["alerts"]] == ["power_anomaly"]
+
+
+# ---------- Phase 6: maintenance (Isolation Forest) ----------
+import random  # noqa: E402
+
+import maintenance  # noqa: E402
+
+
+def test_model_report_meets_targets():
+    report = client.get("/api/maintenance/report").json()
+    for name, r in report.items():
+        assert r["normal_flagged_%"] <= 3, name        # few false alarms on normal windows
+        assert r["drift_detected_%"] >= 90, name
+        assert r["unstable_detected_%"] >= 90, name
+
+
+def test_normal_fridge_stays_healthy():
+    rng = random.Random(1)
+    for _ in range(30):
+        out = send("fridge", rng.gauss(230, 2), rng.gauss(0.8, 0.02))
+        assert not any(a["kind"] == "maintenance" for a in out["alerts"])
+    status = out["maintenance"]
+    assert status["status"] == "ok" and status["health"] >= 80
+
+
+def test_worn_ac_gets_one_maintenance_notice():
+    rng = random.Random(2)
+    notices = []
+    for _ in range(25):   # 8.5 A instead of 6.5 A: under the 9 A threshold, so only ML can catch it
+        out = send("ac", rng.gauss(230, 2), rng.gauss(8.5, 0.15))
+        notices += [a for a in out["alerts"] if a["kind"] == "maintenance"]
+    assert out["maintenance"]["status"] == "service needed"
+    assert len(notices) == 1                              # cooldown stops repeats
+    assert "8." in notices[0]["message"] and "6.50 A normal" in notices[0]["message"]
+    names = {a["appliance_id"]: a for a in client.get("/api/maintenance").json()["appliances"]}
+    assert names["ac"]["status"] == "service needed"
+
+
+def test_unknown_appliance_has_no_model():
+    assert send("toaster", 230, 3)["maintenance"]["status"] == "no model"
+
+
+def test_detector_needs_a_full_window_first():
+    d = maintenance.MaintenanceDetector(main.detector.models)
+    for k in range(maintenance.WINDOW - 1):
+        assert d.update("heater", 230, 5.0)["status"] == "learning"
+    assert d.update("heater", 230, 5.0)["health"] is not None

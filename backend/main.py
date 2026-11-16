@@ -20,6 +20,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+import alerts
+
 print = functools.partial(print, flush=True)  # show log lines immediately
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -31,6 +33,8 @@ MQTT_TOPIC = os.getenv("MQTT_TOPIC", "harshit-smarthome-7f3a/readings")
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "smarthome.db"))
 TARIFF_PER_KWH = float(os.getenv("TARIFF_PER_KWH", "8.0"))  # INR per kWh (flat rate)
 MQTT_ENABLED = os.getenv("MQTT_ENABLED", "1") == "1"  # set to 0 for offline tests
+ALERT_TOPIC = os.getenv("ALERT_TOPIC", "harshit-smarthome-7f3a/alerts")  # alerts are re-published here
+ALERT_COOLDOWN_S = int(os.getenv("ALERT_COOLDOWN_S", "60"))  # same alert at most once per minute
 
 # ---------------- database ----------------
 _db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -49,6 +53,17 @@ with _lock:
             energy_kwh REAL NOT NULL          -- cumulative since ESP32 boot
         );
         CREATE INDEX IF NOT EXISTS idx_readings_app_ts ON readings(appliance_id, ts);
+
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            appliance_id TEXT NOT NULL,
+            kind TEXT NOT NULL,               -- e.g. over_current, power_anomaly
+            severity TEXT NOT NULL,           -- info / warning / critical
+            message TEXT NOT NULL,
+            acknowledged INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_app_kind ON alerts(appliance_id, kind, ts);
         """
     )
     _db.commit()
@@ -66,7 +81,43 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def recent_powers(appliance_id: str, n: int) -> list:
+    with _lock:
+        rows = _db.execute(
+            "SELECT power FROM readings WHERE appliance_id = ? ORDER BY id DESC LIMIT ?",
+            (appliance_id, n),
+        ).fetchall()
+    return [row["power"] for row in rows]
+
+
+def add_alert(appliance_id: str, kind: str, severity: str, message: str):
+    """Store an alert unless the same one was raised in the last ALERT_COOLDOWN_S seconds."""
+    ts = now_iso()
+    since = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_COOLDOWN_S)).isoformat(timespec="seconds")
+    with _lock:
+        recent = _db.execute(
+            "SELECT 1 FROM alerts WHERE appliance_id = ? AND kind = ? AND ts >= ? LIMIT 1",
+            (appliance_id, kind, since),
+        ).fetchone()
+        if recent:
+            return None
+        cur = _db.execute(
+            "INSERT INTO alerts (ts, appliance_id, kind, severity, message) VALUES (?,?,?,?,?)",
+            (ts, appliance_id, kind, severity, message),
+        )
+        _db.commit()
+    alert = {"id": cur.lastrowid, "ts": ts, "appliance_id": appliance_id, "kind": kind,
+             "severity": severity, "message": message, "acknowledged": 0}
+    print(f"[alert] {severity.upper()} {appliance_id}: {message}")
+    if MQTT_ENABLED and mqtt_client.is_connected():
+        mqtt_client.publish(ALERT_TOPIC, json.dumps(alert))
+    return alert
+
+
 def save_reading(r: Reading) -> dict:
+    # baseline for the z-score = readings *before* this one
+    history = recent_powers(r.appliance_id, alerts.Z_WINDOW)
+
     ts = now_iso()
     with _lock:
         _db.execute(
@@ -75,7 +126,11 @@ def save_reading(r: Reading) -> dict:
             (ts, r.appliance_id, r.voltage, r.current, r.power, r.energy_kwh),
         )
         _db.commit()
-    return {"ts": ts, **r.model_dump()}
+
+    # Phase 5: threshold + z-score checks
+    problems = alerts.check_thresholds(r.voltage, r.current, r.power) + alerts.check_zscore(history, r.power)
+    raised = [a for a in (add_alert(r.appliance_id, *p) for p in problems) if a]
+    return {"ts": ts, **r.model_dump(), "alerts": raised}
 
 
 # ---------------- MQTT subscriber ----------------
@@ -227,3 +282,48 @@ def overview(hours: int = Query(24, ge=1, le=24 * 30)):
         c = costs.get(r["appliance_id"], {"kwh": 0.0, "cost": 0.0})
         out.append({**dict(r), "kwh_period": c["kwh"], "cost_period": c["cost"]})
     return {"hours": hours, "tariff_per_kwh": TARIFF_PER_KWH, "appliances": out}
+
+
+# ---------------- Phase 5: alerts ----------------
+@app.get("/api/alerts")
+def list_alerts(
+    appliance_id: Optional[str] = None,
+    unacknowledged: bool = False,
+    limit: int = Query(50, ge=1, le=1000),
+):
+    q, args = "SELECT * FROM alerts WHERE 1=1", []
+    if appliance_id:
+        q += " AND appliance_id = ?"
+        args.append(appliance_id)
+    if unacknowledged:
+        q += " AND acknowledged = 0"
+    q += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    with _lock:
+        rows = _db.execute(q, args).fetchall()
+        open_count = _db.execute("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0").fetchone()[0]
+    return {"unacknowledged": open_count, "alerts": [dict(r) for r in rows]}  # newest first
+
+
+@app.post("/api/alerts/{alert_id}/ack")
+def acknowledge_alert(alert_id: int):
+    with _lock:
+        cur = _db.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,))
+        _db.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "alert not found")
+    return {"id": alert_id, "acknowledged": 1}
+
+
+@app.post("/api/alerts/ack-all")
+def acknowledge_all():
+    with _lock:
+        cur = _db.execute("UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0")
+        _db.commit()
+    return {"acknowledged": cur.rowcount}
+
+
+@app.get("/api/thresholds")
+def thresholds():
+    return {**alerts.THRESHOLDS, "z_limit": alerts.Z_LIMIT, "z_window": alerts.Z_WINDOW,
+            "cooldown_s": ALERT_COOLDOWN_S}

@@ -69,3 +69,43 @@ def test_overview_one_row_per_appliance():
     tv = [a for a in o["appliances"] if a["appliance_id"] == "tv"]
     assert len(tv) == 1 and tv[0]["current"] == 0.6
     assert abs(tv[0]["kwh_period"] - 0.002) < 1e-9
+
+
+# ---------- Phase 5: alerts ----------
+import alerts  # noqa: E402
+
+
+def test_threshold_rules():
+    assert alerts.check_thresholds(230, 5, 1150) == []
+    kinds = [k for k, _, _ in alerts.check_thresholds(260, 9.5, 2470)]
+    assert kinds == ["over_voltage", "over_current", "over_power"]
+    assert [k for k, _, _ in alerts.check_thresholds(190, 1, 190)] == ["under_voltage"]
+    assert alerts.check_thresholds(0, 0, 0) == []  # device off is not an under-voltage
+
+
+def test_zscore_rule():
+    history = [1000 + (i % 5) for i in range(30)]
+    assert alerts.check_zscore(history[:10], 5000) == []          # too little history
+    assert alerts.check_zscore(history, 1003) == []               # normal
+    assert alerts.check_zscore(history, 1500)[0][0] == "power_anomaly"
+
+
+def test_over_current_alert_is_stored_once_and_can_be_acked():
+    out = send("kettle", 230, 9.6)                 # 9.6 A > 9.0 A limit
+    assert [a["kind"] for a in out["alerts"]] == ["over_current", "over_power"]
+    again = send("kettle", 230, 9.7)               # within cooldown -> not repeated
+    assert again["alerts"] == []
+    data = client.get("/api/alerts", params={"appliance_id": "kettle"}).json()
+    assert len(data["alerts"]) == 2
+    alert_id = data["alerts"][0]["id"]
+    assert client.post(f"/api/alerts/{alert_id}/ack").status_code == 200
+    left = client.get("/api/alerts", params={"appliance_id": "kettle", "unacknowledged": True}).json()
+    assert len(left["alerts"]) == 1
+    assert client.post("/api/alerts/999999/ack").status_code == 404
+
+
+def test_zscore_alert_end_to_end():
+    for i in range(25):
+        send("pump", 230, 2.0 + 0.01 * (i % 3))    # steady ~460 W
+    out = send("pump", 230, 3.5)                   # sudden jump to ~805 W, still under limits
+    assert [a["kind"] for a in out["alerts"]] == ["power_anomaly"]

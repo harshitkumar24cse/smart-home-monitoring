@@ -18,6 +18,7 @@ ESP32 (Wokwi) --MQTT--> broker.hivemq.com --> FastAPI backend --> SQLite
 | `phase2_wokwi/` | Same sketch plus Wi-Fi and MQTT publishing every 3 s |
 | `backend/main.py` | FastAPI app: MQTT subscriber, SQLite storage, REST API |
 | `backend/static/index.html` | Web dashboard (Phase 4) |
+| `backend/alerts.py` | Threshold and z-score alert rules (Phase 5) |
 | `tools/simulate.py` | Sends fake readings over HTTP (normal or with faults) |
 | `tests/` | Automated tests (`pytest`), no internet needed |
 
@@ -89,3 +90,35 @@ It refreshes every 3 s and shows:
 
 Extra endpoint used by the dashboard: `GET /api/overview?hours=24` (latest reading + period kWh/cost
 for every appliance in one call). Charts use Chart.js from the jsDelivr CDN, so the browser needs internet.
+
+## Phase 5: Alerts
+Every reading (from MQTT or `/api/ingest`) is checked in `backend/alerts.py`:
+
+| Rule | Default | Severity |
+|---|---|---|
+| Over-voltage | > 253 V (230 V + 10%) | critical |
+| Under-voltage | < 207 V (230 V - 10%; ~0 V counts as "off", not a sag) | warning |
+| Over-current | > 9.0 A | critical |
+| Over-power | > 2000 W | warning |
+| Power anomaly (z-score) | \|z\| > 3.5 against the appliance's last 60 readings | warning |
+
+z-score: `z = (power - mean) / std` of recent readings. It needs at least 20 earlier readings, and the
+std has a small floor so a perfectly flat signal doesn't cause divide-by-zero alarms. 3.0 gave the odd
+false alarm from normal sensor noise in testing, so the default is 3.5.
+
+- The same alert (appliance + kind) is not repeated within 60 s (`ALERT_COOLDOWN_S`).
+- Alerts are stored in the `alerts` table and re-published over MQTT to `harshit-smarthome-7f3a/alerts`.
+- Limits can be changed with environment variables: `VOLTAGE_MIN`, `VOLTAGE_MAX`, `CURRENT_MAX`,
+  `POWER_MAX`, `Z_LIMIT`, `Z_WINDOW`.
+- On the dashboard: an Alerts panel with an unread count and OK / Acknowledge-all buttons, and the
+  live tiles turn red when a value is outside the limits.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/alerts?appliance_id=&unacknowledged=true&limit=50` | Alerts, newest first, plus unread count |
+| `POST /api/alerts/{id}/ack` | Mark one alert as seen |
+| `POST /api/alerts/ack-all` | Mark all as seen |
+| `GET /api/thresholds` | Current limits |
+
+Try it: `tools/simulate.py --count 30` (builds a baseline), then `--fault spike` or `--fault sag`.
+In Wokwi, turn the current pot above 9 A or the voltage pot below 207 V.

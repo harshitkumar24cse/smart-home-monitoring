@@ -48,6 +48,20 @@
   .table-wrap { overflow-x: auto; }
   .big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .empty { color: var(--muted); padding: 8px 0; }
+  .tile.bad { border-color: var(--bad); } .tile.bad .value { color: var(--bad); }
+  .badge { display: inline-block; min-width: 20px; padding: 1px 7px; border-radius: 10px; font-size: 12px;
+           background: var(--line); color: var(--text); text-align: center; margin-left: 6px; }
+  .badge.hot { background: var(--bad); color: #fff; }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover { background: var(--bg); }
+  .alert-list { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+  .alert-list li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .alert-list li.done { opacity: .5; }
+  .sev { flex: none; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; }
+  .sev.critical { background: var(--bad); color: #fff; } .sev.warning { background: var(--warn); color: #fff; }
+  .sev.info { background: var(--accent); color: #fff; }
+  .alert-text { flex: 1; } .alert-meta { color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -63,9 +77,9 @@
 <main>
   <!-- live values for the selected appliance -->
   <section class="tiles">
-    <div class="tile"><div class="label">Voltage</div><div class="value"><span id="v">–</span><span class="unit">V</span></div></div>
-    <div class="tile"><div class="label">Current</div><div class="value"><span id="i">–</span><span class="unit">A</span></div></div>
-    <div class="tile"><div class="label">Power</div><div class="value"><span id="p">–</span><span class="unit">W</span></div></div>
+    <div class="tile" id="tileV"><div class="label">Voltage</div><div class="value"><span id="v">–</span><span class="unit">V</span></div></div>
+    <div class="tile" id="tileI"><div class="label">Current</div><div class="value"><span id="i">–</span><span class="unit">A</span></div></div>
+    <div class="tile" id="tileP"><div class="label">Power</div><div class="value"><span id="p">–</span><span class="unit">W</span></div></div>
     <div class="tile"><div class="label">Energy (since boot)</div><div class="value"><span id="e">–</span><span class="unit">kWh</span></div></div>
   </section>
 
@@ -101,10 +115,13 @@
       <div class="status" id="projection" style="margin-top:6px"></div>
     </div>
 
-    <!-- placeholder: alerts panel is added in Phase 5 -->
+    <!-- Phase 5: alerts -->
     <div class="card" id="alertsCard">
-      <h2>Alerts</h2>
-      <div class="empty">Coming in Phase 5.</div>
+      <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+        <h2 style="margin:0">Alerts<span id="alertCount" class="badge">0</span></h2>
+        <button id="ackAll">Acknowledge all</button>
+      </div>
+      <ul id="alertList" class="alert-list"><li class="empty">No alerts.</li></ul>
     </div>
   </section>
 
@@ -130,9 +147,12 @@ const $ = (id) => document.getElementById(id);
 const getJSON = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const fmt = (x, d) => (x == null ? "–" : Number(x).toFixed(d));
 const timeOf = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+// escape text before putting it in HTML (appliance names arrive from a public MQTT broker)
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 let selected = null;   // currently selected appliance id
+let limits = null;     // safe limits from /api/thresholds (Phase 5)
 
 // ---------- charts ----------
 Chart.defaults.color = css("--muted");
@@ -174,7 +194,7 @@ async function refreshAppliances() {
   const names = list.map((a) => a.appliance_id);
   if (!selected && names.length) selected = names[0];
   if (sel.options.length !== names.length) {
-    sel.innerHTML = names.map((n) => `<option>${n}</option>`).join("");
+    sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
   }
   sel.value = selected || "";
 }
@@ -188,6 +208,25 @@ async function refreshLatest() {
   $("p").textContent = fmt(r.power, 0);
   $("e").textContent = fmt(r.energy_kwh, 4);
   $("updated").textContent = "updated " + timeOf(r.ts);
+  if (limits) {  // turn a tile red when its value is outside the safe limits
+    $("tileV").classList.toggle("bad", r.voltage > limits.voltage_max || (r.voltage > 1 && r.voltage < limits.voltage_min));
+    $("tileI").classList.toggle("bad", r.current > limits.current_max);
+    $("tileP").classList.toggle("bad", r.power > limits.power_max);
+  }
+}
+
+async function refreshAlerts() {
+  const data = await getJSON("/api/alerts?limit=30");
+  if (!data) return;
+  $("alertCount").textContent = data.unacknowledged;
+  $("alertCount").className = "badge" + (data.unacknowledged ? " hot" : "");
+  $("alertList").innerHTML = data.alerts.length ? data.alerts.map((a) => `
+    <li class="${a.acknowledged ? "done" : ""}">
+      <span class="sev ${a.severity}">${a.severity}</span>
+      <div class="alert-text">${esc(a.message)}
+        <div class="alert-meta">${esc(a.appliance_id)} · ${esc(a.kind)} · ${timeOf(a.ts)}</div></div>
+      ${a.acknowledged ? "" : `<button data-ack="${a.id}">OK</button>`}
+    </li>`).join("") : '<li class="empty">No alerts.</li>';
 }
 
 async function refreshHistory() {
@@ -219,8 +258,8 @@ async function refreshCostAndTable() {
     : "";
 
   $("appTable").innerHTML = o.appliances.length ? o.appliances.map((a) => `
-    <tr data-id="${a.appliance_id}" class="${a.appliance_id === selected ? "selected" : ""}">
-      <td>${a.appliance_id}</td>
+    <tr data-id="${esc(a.appliance_id)}" class="${a.appliance_id === selected ? "selected" : ""}">
+      <td>${esc(a.appliance_id)}</td>
       <td class="num">${fmt(a.voltage, 1)} V</td><td class="num">${fmt(a.current, 2)} A</td>
       <td class="num">${fmt(a.power, 0)} W</td><td class="num">${fmt(a.kwh_period, 4)}</td>
       <td class="num">₹${fmt(a.cost_period, 2)}</td><td>${timeOf(a.ts)}</td>
@@ -229,7 +268,8 @@ async function refreshCostAndTable() {
 
 async function refreshAll() {
   await refreshAppliances();
-  await Promise.all([refreshHealth(), refreshLatest(), refreshHistory(), refreshCostAndTable()]);
+  if (!limits) limits = await getJSON("/api/thresholds");
+  await Promise.all([refreshHealth(), refreshLatest(), refreshHistory(), refreshCostAndTable(), refreshAlerts()]);
 }
 
 // ---------- events ----------
@@ -238,6 +278,11 @@ $("appSelect").addEventListener("change", (e) => select(e.target.value));
 $("appTable").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
 $("rangeSelect").addEventListener("change", refreshHistory);
 $("costHours").addEventListener("change", refreshCostAndTable);
+$("alertList").addEventListener("click", async (e) => {
+  const id = e.target.dataset.ack;
+  if (id) { await fetch(`/api/alerts/${id}/ack`, { method: "POST" }); refreshAlerts(); }
+});
+$("ackAll").addEventListener("click", async () => { await fetch("/api/alerts/ack-all", { method: "POST" }); refreshAlerts(); });
 
 refreshAll();
 setInterval(refreshAll, 3000);   // the ESP32 publishes every 3 s

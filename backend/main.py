@@ -5,6 +5,7 @@ ESP32 --MQTT--> broker --> this app --> SQLite --> REST API (--> dashboard)
 Run:  uvicorn main:app --reload      (from the backend folder)
 Docs: http://127.0.0.1:8000/docs
 """
+import functools
 import json
 import os
 import sqlite3
@@ -14,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import paho.mqtt.client as mqtt
+
+print = functools.partial(print, flush=True)  # show log lines immediately
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -24,6 +27,7 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "harshit-smarthome-7f3a/readings")
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "smarthome.db"))
 TARIFF_PER_KWH = float(os.getenv("TARIFF_PER_KWH", "8.0"))  # INR per kWh (flat rate)
+MQTT_ENABLED = os.getenv("MQTT_ENABLED", "1") == "1"  # set to 0 for offline tests
 
 # ---------------- database ----------------
 _db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -93,14 +97,16 @@ mqtt_client.on_message = on_message
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
-        mqtt_client.loop_start()  # background thread, auto-reconnects
-    except Exception as e:
-        print(f"[mqtt] could not start: {e}")
+    if MQTT_ENABLED:
+        try:
+            mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
+            mqtt_client.loop_start()  # background thread, auto-reconnects
+        except Exception as e:
+            print(f"[mqtt] could not start: {e}")
     yield
-    mqtt_client.loop_stop()
-    mqtt_client.disconnect()
+    if MQTT_ENABLED:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
 
 
 app = FastAPI(title="Smart Home Monitoring API", lifespan=lifespan)

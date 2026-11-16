@@ -54,3 +54,18 @@ def test_bad_reading_rejected():
 
 def test_unknown_appliance_latest_404():
     assert client.get("/api/latest", params={"appliance_id": "nope"}).status_code == 404
+
+
+# ---------- Phase 4: dashboard ----------
+def test_dashboard_page_served():
+    r = client.get("/")
+    assert r.status_code == 200 and "Smart Home Monitor" in r.text
+
+
+def test_overview_one_row_per_appliance():
+    send("tv", 230, 0.4, kwh=0.0)
+    send("tv", 231, 0.6, kwh=0.002)
+    o = client.get("/api/overview").json()
+    tv = [a for a in o["appliances"] if a["appliance_id"] == "tv"]
+    assert len(tv) == 1 and tv[0]["current"] == 0.6
+    assert abs(tv[0]["kwh_period"] - 0.002) < 1e-9

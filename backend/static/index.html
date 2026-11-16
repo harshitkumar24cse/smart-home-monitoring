@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Home Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1d1f23; --muted: #6b7280; --line: #e3e5e8;
+    --accent: #2563eb; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111317; --card: #1a1d22; --text: #e8eaed; --muted: #9aa0a6; --line: #2b2f36;
+            --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .04em; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .status { color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px;
+         background: var(--muted); vertical-align: middle; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--bad); }
+  select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); font: inherit; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .tile .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .tile .value { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 4px; }
+  .tile .unit { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 3px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .chart-box { position: relative; height: 240px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  td.num, th.num { text-align: right; }
+  tbody tr { cursor: pointer; } tbody tr:hover { background: var(--bg); }
+  tr.selected td { font-weight: 650; }
+  .table-wrap { overflow-x: auto; }
+  .big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Smart Home Monitor</h1>
+  <div class="row">
+    <label>Appliance <select id="appSelect"></select></label>
+    <span class="status"><span id="mqttDot" class="dot"></span><span id="mqttText">checking…</span></span>
+    <span class="status" id="updated"></span>
+  </div>
+</header>
+
+<main>
+  <!-- live values for the selected appliance -->
+  <section class="tiles">
+    <div class="tile"><div class="label">Voltage</div><div class="value"><span id="v">–</span><span class="unit">V</span></div></div>
+    <div class="tile"><div class="label">Current</div><div class="value"><span id="i">–</span><span class="unit">A</span></div></div>
+    <div class="tile"><div class="label">Power</div><div class="value"><span id="p">–</span><span class="unit">W</span></div></div>
+    <div class="tile"><div class="label">Energy (since boot)</div><div class="value"><span id="e">–</span><span class="unit">kWh</span></div></div>
+  </section>
+
+  <!-- history charts -->
+  <section class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+      <h2 style="margin:0">History</h2>
+      <label>Range
+        <select id="rangeSelect">
+          <option value="15">15 min</option><option value="60" selected>1 hour</option>
+          <option value="360">6 hours</option><option value="1440">24 hours</option>
+        </select>
+      </label>
+    </div>
+    <div class="grid2">
+      <div class="chart-box"><canvas id="powerChart"></canvas></div>
+      <div class="chart-box"><canvas id="viChart"></canvas></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <!-- cost estimate -->
+    <div class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+        <h2 style="margin:0">Cost estimate</h2>
+        <select id="costHours">
+          <option value="1">Last hour</option><option value="24" selected>Last 24 h</option>
+          <option value="168">Last 7 days</option><option value="720">Last 30 days</option>
+        </select>
+      </div>
+      <div class="big">₹ <span id="totalCost">–</span></div>
+      <div class="status"><span id="totalKwh">–</span> kWh at ₹<span id="tariff">–</span>/kWh</div>
+      <div class="status" id="projection" style="margin-top:6px"></div>
+    </div>
+
+    <!-- placeholder: alerts panel is added in Phase 5 -->
+    <div class="card" id="alertsCard">
+      <h2>Alerts</h2>
+      <div class="empty">Coming in Phase 5.</div>
+    </div>
+  </section>
+
+  <!-- per-appliance view -->
+  <section class="card">
+    <h2>Appliances</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Appliance</th><th class="num">Voltage</th><th class="num">Current</th>
+          <th class="num">Power</th><th class="num">kWh (period)</th><th class="num">Cost (period)</th>
+          <th>Last seen</th>
+        </tr></thead>
+        <tbody id="appTable"><tr><td colspan="7" class="empty">No readings yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+// ---------- small helpers ----------
+const $ = (id) => document.getElementById(id);
+const getJSON = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+const fmt = (x, d) => (x == null ? "–" : Number(x).toFixed(d));
+const timeOf = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+let selected = null;   // currently selected appliance id
+
+// ---------- charts ----------
+Chart.defaults.color = css("--muted");
+Chart.defaults.borderColor = css("--line");
+Chart.defaults.animation = false;
+
+function lineChart(canvas, datasets, scales) {
+  return new Chart(canvas, {
+    type: "line",
+    data: { labels: [], datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.2 } },
+      plugins: { legend: { position: "bottom", labels: { boxWidth: 12 } } },
+      scales: { x: { ticks: { maxTicksLimit: 6 } }, ...scales },
+    },
+  });
+}
+const powerChart = lineChart($("powerChart"),
+  [{ label: "Power (W)", data: [], borderColor: css("--accent") }],
+  { y: { title: { display: true, text: "W" } } });
+const viChart = lineChart($("viChart"),
+  [{ label: "Voltage (V)", data: [], borderColor: css("--warn"), yAxisID: "y" },
+   { label: "Current (A)", data: [], borderColor: css("--ok"), yAxisID: "y1" }],
+  { y: { position: "left", title: { display: true, text: "V" } },
+    y1: { position: "right", title: { display: true, text: "A" }, grid: { drawOnChartArea: false } } });
+
+// ---------- refresh functions ----------
+async function refreshHealth() {
+  const h = await getJSON("/api/health");
+  $("mqttDot").className = "dot " + (h && h.mqtt_connected ? "on" : "off");
+  $("mqttText").textContent = h ? (h.mqtt_connected ? "MQTT connected" : "MQTT offline") : "backend offline";
+}
+
+async function refreshAppliances() {
+  const list = (await getJSON("/api/appliances")) || [];
+  const sel = $("appSelect");
+  const names = list.map((a) => a.appliance_id);
+  if (!selected && names.length) selected = names[0];
+  if (sel.options.length !== names.length) {
+    sel.innerHTML = names.map((n) => `<option>${n}</option>`).join("");
+  }
+  sel.value = selected || "";
+}
+
+async function refreshLatest() {
+  if (!selected) return;
+  const r = await getJSON("/api/latest?appliance_id=" + encodeURIComponent(selected));
+  if (!r) return;
+  $("v").textContent = fmt(r.voltage, 1);
+  $("i").textContent = fmt(r.current, 2);
+  $("p").textContent = fmt(r.power, 0);
+  $("e").textContent = fmt(r.energy_kwh, 4);
+  $("updated").textContent = "updated " + timeOf(r.ts);
+}
+
+async function refreshHistory() {
+  if (!selected) return;
+  const minutes = $("rangeSelect").value;
+  const rows = (await getJSON(`/api/history?appliance_id=${encodeURIComponent(selected)}&minutes=${minutes}&limit=2000`)) || [];
+  const labels = rows.map((r) => timeOf(r.ts));
+  powerChart.data.labels = labels;
+  powerChart.data.datasets[0].data = rows.map((r) => r.power);
+  viChart.data.labels = labels;
+  viChart.data.datasets[0].data = rows.map((r) => r.voltage);
+  viChart.data.datasets[1].data = rows.map((r) => r.current);
+  powerChart.update(); viChart.update();
+}
+
+async function refreshCostAndTable() {
+  const hours = Number($("costHours").value);
+  const o = await getJSON("/api/overview?hours=" + hours);
+  if (!o) return;
+  const totalKwh = o.appliances.reduce((s, a) => s + a.kwh_period, 0);
+  $("totalKwh").textContent = fmt(totalKwh, 4);
+  $("totalCost").textContent = fmt(totalKwh * o.tariff_per_kwh, 2);
+  $("tariff").textContent = fmt(o.tariff_per_kwh, 2);
+  // simple projection: current total power kept for a 30-day month
+  const watts = o.appliances.reduce((s, a) => s + a.power, 0);
+  const monthKwh = (watts / 1000) * 24 * 30;
+  $("projection").textContent = o.appliances.length
+    ? `If today's load (${fmt(watts, 0)} W) ran all month: ≈ ${fmt(monthKwh, 0)} kWh, ₹${fmt(monthKwh * o.tariff_per_kwh, 0)}`
+    : "";
+
+  $("appTable").innerHTML = o.appliances.length ? o.appliances.map((a) => `
+    <tr data-id="${a.appliance_id}" class="${a.appliance_id === selected ? "selected" : ""}">
+      <td>${a.appliance_id}</td>
+      <td class="num">${fmt(a.voltage, 1)} V</td><td class="num">${fmt(a.current, 2)} A</td>
+      <td class="num">${fmt(a.power, 0)} W</td><td class="num">${fmt(a.kwh_period, 4)}</td>
+      <td class="num">₹${fmt(a.cost_period, 2)}</td><td>${timeOf(a.ts)}</td>
+    </tr>`).join("") : '<tr><td colspan="7" class="empty">No readings yet.</td></tr>';
+}
+
+async function refreshAll() {
+  await refreshAppliances();
+  await Promise.all([refreshHealth(), refreshLatest(), refreshHistory(), refreshCostAndTable()]);
+}
+
+// ---------- events ----------
+function select(id) { selected = id; refreshAll(); }
+$("appSelect").addEventListener("change", (e) => select(e.target.value));
+$("appTable").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) select(tr.dataset.id); });
+$("rangeSelect").addEventListener("change", refreshHistory);
+$("costHours").addEventListener("change", refreshCostAndTable);
+
+refreshAll();
+setInterval(refreshAll, 3000);   // the ESP32 publishes every 3 s
+</script>
+</body>
+</html>

@@ -1,9 +1,10 @@
 """
-Smart Home Monitoring - backend (Phases 2-3)
+Smart Home Monitoring - backend
 
-ESP32 --MQTT--> broker --> this app --> SQLite --> REST API (--> dashboard)
-Run:  uvicorn main:app --reload      (from the backend folder)
-Docs: http://127.0.0.1:8000/docs
+ESP32 --MQTT--> broker --> this app --> SQLite --> REST API + dashboard
+Run:        uvicorn main:app --port 8000      (from the backend folder)
+Dashboard:  http://127.0.0.1:8000/
+Docs:       http://127.0.0.1:8000/docs
 """
 import functools
 import json
@@ -15,10 +16,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import paho.mqtt.client as mqtt
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 print = functools.partial(print, flush=True)  # show log lines immediately
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 # ---------------- config ----------------
 MQTT_HOST = os.getenv("MQTT_HOST", "broker.hivemq.com")
@@ -125,6 +128,11 @@ def consumption_kwh(rows) -> float:
 
 
 # ---------------- routes ----------------
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "mqtt_connected": mqtt_client.is_connected(), "topic": MQTT_TOPIC}
@@ -202,3 +210,20 @@ def cost(appliance_id: Optional[str] = None, hours: int = Query(24, ge=1, le=24 
             "total_kwh": round(total_kwh, 5),
             "total_cost": round(total_kwh * TARIFF_PER_KWH, 4),
             "appliances": out}
+
+
+@app.get("/api/overview")
+def overview(hours: int = Query(24, ge=1, le=24 * 30)):
+    """One row per appliance: its newest reading plus energy and cost over the last `hours`."""
+    with _lock:
+        rows = _db.execute(
+            "SELECT r.* FROM readings r JOIN "
+            "(SELECT appliance_id, MAX(id) AS max_id FROM readings GROUP BY appliance_id) last "
+            "ON r.id = last.max_id ORDER BY r.appliance_id"
+        ).fetchall()
+    costs = {c["appliance_id"]: c for c in cost(hours=hours)["appliances"]}
+    out = []
+    for r in rows:
+        c = costs.get(r["appliance_id"], {"kwh": 0.0, "cost": 0.0})
+        out.append({**dict(r), "kwh_period": c["kwh"], "cost_period": c["cost"]})
+    return {"hours": hours, "tariff_per_kwh": TARIFF_PER_KWH, "appliances": out}

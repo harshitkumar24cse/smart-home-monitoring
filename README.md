@@ -17,6 +17,7 @@ ESP32 (Wokwi) --MQTT--> broker.hivemq.com --> FastAPI backend --> SQLite
 | `phase1_wokwi/` | ESP32 sketch: 2 potentiometers as voltage/current sensors, OLED display |
 | `phase2_wokwi/` | Same sketch plus Wi-Fi and MQTT publishing every 3 s |
 | `backend/main.py` | FastAPI app: MQTT subscriber, SQLite storage, REST API |
+| `backend/static/index.html` | Web dashboard (Phase 4) |
 | `tools/simulate.py` | Sends fake readings over HTTP (normal or with faults) |
 | `tests/` | Automated tests (`pytest`), no internet needed |
 
@@ -75,3 +76,16 @@ Automated tests:
 ```
 Tested 2026-11-16: HTTP ingest, all GET endpoints, and real MQTT through HiveMQ (bad MQTT
 messages are ignored without crashing the subscriber).
+
+## Phase 4: Web dashboard
+Start the backend, then open **http://127.0.0.1:8000/** (file: `backend/static/index.html`).
+It refreshes every 3 s and shows:
+- **Live tiles**: voltage, current, power, energy for the selected appliance.
+- **History charts**: power, and voltage + current, for 15 min to 24 h.
+- **Cost estimate**: kWh and ₹ for the last hour / 24 h / 7 days / 30 days, plus a rough
+  monthly projection if the current load kept running.
+- **Appliances table**: one row per appliance (latest values, kWh and cost for the period).
+  Click a row to switch the tiles and charts to it.
+
+Extra endpoint used by the dashboard: `GET /api/overview?hours=24` (latest reading + period kWh/cost
+for every appliance in one call). Charts use Chart.js from the jsDelivr CDN, so the browser needs internet.

@@ -93,6 +93,27 @@ It refreshes every 3 s and shows:
 Extra endpoint used by the dashboard: `GET /api/overview?hours=24` (latest reading + period kWh/cost
 for every appliance in one call). Charts use Chart.js from the jsDelivr CDN, so the browser needs internet.
 
+### Open the dashboard on your phone
+The page fits phone screens. The phone needs to reach the laptop over the network. College and other
+public Wi-Fi usually block devices from talking to each other (and may block MQTT port 1883), so use
+your **phone's hotspot**: it works anywhere, and the laptop still gets internet for Wokwi and HiveMQ.
+
+1. Turn on the hotspot on your phone and connect the laptop to it.
+2. On the laptop run `ipconfig` and note the Wi-Fi adapter's **IPv4 Address**
+   (Android hotspot: usually `192.168.x.x`; iPhone: `172.20.10.x`).
+3. Start the backend so other devices can reach it (from the `backend` folder):
+   ```
+   ..\.venv\Scripts\python -m uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
+4. If Windows Firewall asks, allow Python. Windows often marks a hotspot as a *Public* network, so either
+   tick Public too or set the hotspot to *Private* in the laptop's Wi-Fi settings.
+5. Start Wokwi (or `tools/simulate.py`) on the laptop as usual.
+6. On the phone's browser open `http://<laptop-IP>:8000`, e.g. `http://192.168.43.25:8000`.
+
+Notes: the laptop must stay on with the backend running; the phone only shows the dashboard. The
+laptop's IP can change each time it joins the hotspot, so re-check `ipconfig` if the page won't load.
+Same idea on home Wi-Fi: phone and laptop just need to be on the same network.
+
 ## Phase 5: Alerts
 Every reading (from MQTT or `/api/ingest`) is checked in `backend/alerts.py`:
 

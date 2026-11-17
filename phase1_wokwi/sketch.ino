@@ -5,7 +5,7 @@
   Pot 1 (GPIO34) simulates the voltage sensor  : 0 - 250 V
   Pot 2 (GPIO35) simulates the current sensor  : 0 - 10 A
   P (W)    = V * I
-  E (kWh) += P * dt / 3,600,000   (dt in ms, measured, not assumed)
+  E (kWh) += P * dt / 3,600,000,000   (dt in ms, measured, not assumed)
 */
 #include <Wire.h>
 #include <Adafruit_GFX.h>
